@@ -555,7 +555,7 @@ static void enviar_dependencias_ya_terminadas(int indice) {
 }
 
 static void mostrar_estados(void) {
-    printf("\n--- Estado final ---\n");
+    printf("\n-Estado final:\n");
     for (int i = 0; i < cantidad; i++) {
         printf("%s : %s\n", actividades[i].id, nombre_estado(actividades[i].estado));
     }
