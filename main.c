@@ -565,7 +565,6 @@ int main(int argc, char *argv[]) {
     int k;
     int activos;
 
-    /* 1. VERIFICAR ARGUMENTOS */
     if (argc != 3) {
         fprintf(stderr, "Uso: %s plan.txt K\n", argv[0]);
         return EXIT_FAILURE;
@@ -577,7 +576,6 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    /* 2. CONFIGURAR SEÑAL */
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = manejar_sigint;
@@ -587,7 +585,6 @@ int main(int argc, char *argv[]) {
 
     srand((unsigned int)(time(NULL) ^ getpid()));
 
-    /* 3. LEER PLAN */
     if (cargar_plan(argv[1]) != 0) {
         return EXIT_FAILURE;
     }
@@ -597,7 +594,6 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    /* 4. VALIDAR DAG */
     if (validar_dag() != 0) {
         return EXIT_FAILURE;
     }
@@ -622,14 +618,12 @@ int main(int argc, char *argv[]) {
         }
         printf("\n");
     }
-
-    /* 5. CREAR PIPE CENTRAL */
+/
     if (pipe(pipe_completadas) == -1) {
         perror("Error al crear pipe central");
         return EXIT_FAILURE;
     }
 
-    /* 6. PLANIFICAR PROCESOS */
     while (contar_finalizadas() < cantidad) {
         if (interrupcion) {
             printf("\n[PADRE] SIGINT recibido. Abortando todas las actividades.\n");
@@ -649,7 +643,6 @@ int main(int argc, char *argv[]) {
         int hubo_cambio = 0;
         activos = contar_ejecutando();
 
-        /* 7. ABORTAR RAMAS INVALIDADAS */
         for (int i = 0; i < cantidad; i++) {
             if (actividades[i].estado == PENDIENTE && alguna_dependencia_abortada(i)) {
                 abortar_rama(i);
@@ -657,7 +650,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* 8. CREAR ACTIVIDADES DISPONIBLES */
         for (int i = 0; i < cantidad && activos < k; i++) {
             if (actividades[i].estado != PENDIENTE) continue;
             if (!todas_dependencias_disponibles(i)) continue;
@@ -672,13 +664,11 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* 9. PROCESAR TERMINACIONES */
         int procesado = procesar_completadas(0);
         if (procesado > 0) {
             hubo_cambio = 1;
         }
 
-        /* 10. RECOGER PROCESOS */
         for (int i = 0; i < cantidad; i++) {
             if (actividades[i].estado == TERMINADA || actividades[i].estado == ABORTADA) {
                 if (actividades[i].pid > 0) {
@@ -708,7 +698,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* 11. FINALIZAR PROCESOS */
     if (interrupcion) {
         for (int i = 0; i < cantidad; i++) {
             if (actividades[i].estado == EJECUTANDO && actividades[i].pid > 0) {
@@ -731,7 +720,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* 12. CERRAR PIPES */
     for (int i = 0; i < cantidad; i++) {
         if (actividades[i].pipe_entrada[0] != -1) close(actividades[i].pipe_entrada[0]);
         if (actividades[i].pipe_entrada[1] != -1) close(actividades[i].pipe_entrada[1]);
@@ -739,7 +727,6 @@ int main(int argc, char *argv[]) {
     close(pipe_completadas[0]);
     close(pipe_completadas[1]);
 
-    /* 13. MOSTRAR RESULTADO */
     mostrar_estados();
     return EXIT_SUCCESS;
 }

@@ -5,13 +5,13 @@ Integrantes: Diego Briones, Matias Rojas Lara
 
 Simulador y planificador de actividades modeladas como un Grafo Acíclico Dirigido (DAG). Cada actividad se ejecuta como un proceso independiente, las dependencias se notifican mediante pipes y el número de procesos simultáneos está limitado por un parámetro K. El programa tolera fallos de actividades individuales y reacciona a SIGINT (Ctrl+C).
 
-Contenido del repositorio:
+# Contenido del repositorio:
 main.c: corresponde a la implementación completa del planificador.
 plan.txt: corresponde al plan de ejemplo.
 README.md: este documento, correspondiente a la explicación sobre las funciones implementadas, su modo de uso y la justificación de las decisiones de diseño tomadas.
 .gitignore: ignora binarios y archivos de respaldo.
 
-Compilación
+# Compilación
 
 Es necesario utilizar el siguiente comando:
 
@@ -19,7 +19,9 @@ gcc -Wall -Wextra -std=c17 main.c -o planificador -lpthread
 
 El programa no usa hilos ni mecanismos de sincronización de hilos. El flag -lpthread se incluye solo porque la rúbrica pide ese comando de compilación.
 
-Modo de uso
+El programa usa fork() y pipe(), por lo que requiere Linux. Fue probado en Ubuntu (WSL).
+
+# Modo de uso
 
 ./planificador plan.txt K
 
@@ -33,7 +35,7 @@ Por ejemplo: PLANIFICADOR_FALLA=4 ./planificador plan.txt 4
 
 Para simular la inspección de la Seremi basta con presionar Ctrl+C mientras se ejecuta.
 
-Formato de plan.txt
+# Formato de plan.txt
 
 Cada línea del archivo representa una actividad con el formato ID_Actividad : Nombre_Actividad : tiempo_ms : [Dependencia1, Dependencia2, ...]
 
@@ -48,11 +50,13 @@ Por ejemplo, el plan.txt del repositorio es:
 
 Si el tiempo está vacío (como en la actividad 1), se asigna uno aleatorio entre 100 y 5000 ms. Una actividad sin dependencias deja ese último campo vacío.
 
-Funciones implementadas
+# Funciones implementadas
 
-Las funciones parsear_linea y cargar_plan leen el archivo plan.txt y guardan cada actividad (ID, nombre, tiempo, dependencias y estado) en un arreglo. La función buscar_actividad entrega el índice de una actividad a partir de su ID.
+Las funciones parsear_linea y cargar_plan leen el archivo plan.txt y guardan cada actividad (ID, nombre, tiempo, dependencias y estado) en un arreglo. Las funciones hash_id, insertar_hash y buscar_actividad implementan una tabla hash que entrega el índice de una actividad a partir de su ID sin recorrer todo el arreglo.
 
 La función validar_dag revisa que no haya IDs duplicados, dependencias que no existen ni ciclos. Si algo falla, no se crea ningún proceso.
+
+La función construir_indices se ejecuta después de validar el DAG. Guarda el índice de cada dependencia y arma la lista de actividades dependientes de cada una, para no recorrer todas las actividades al propagar mensajes o abortar ramas.
 
 La función crear_proceso crea el pipe de la actividad y hace fork(). El hijo espera el mensaje de cada una de sus dependencias, simula el trabajo con nanosleep y avisa al padre cuando termina. Las funciones enviar_mensaje_fd y recibir_mensaje escriben y leen mensajes en un pipe, con un tamaño máximo de 100 bytes.
 
@@ -60,11 +64,13 @@ Las funciones propagar_dependencia y enviar_dependencias_ya_terminadas avisan a 
 
 La función manejar_sigint activa una bandera cuando se presiona Ctrl+C, mostrar_estados imprime el estado final de todas las actividades, y main valida los argumentos, carga y valida el plan, ejecuta el ciclo de planificación, recoge los procesos con waitpid y muestra el resultado.
 
-Decisiones de diseño
+# Decisiones de diseño
 
 Se usan procesos y no hilos porque el enunciado prohíbe los hilos, así que cada actividad es un proceso creado con fork(). Además, si uno falla, el resto del simulador no se ve afectado.
 
 Cada actividad tiene su propio pipe de entrada, donde el padre le escribe las notificaciones de sus dependencias. Además hay un pipe central donde todos los hijos le avisan su resultado al padre.
+
+El mensaje de una actividad terminada viaja del hijo al padre por el pipe central, y el padre lo reenvía al pipe de cada actividad dependiente. Se centraliza en el padre para que los hijos no compartan pipes entre sí y para que los estados se actualicen en un solo lugar.
 
 Para controlar K, antes de crear un proceso se cuentan los que están en ejecución y solo se crea otro si son menos que K. Un hijo puede crearse mientras sus dependencias aún corren, pero queda bloqueado esperando sus mensajes y no empieza a trabajar hasta recibirlos todos. Ese proceso en espera también cuenta dentro de K.
 
@@ -76,10 +82,12 @@ Para SIGINT, el manejador solo levanta una bandera. El ciclo principal la revisa
 
 El DAG se valida antes de crear procesos para no dejar ninguno esperando algo que nunca va a pasar.
 
-Pruebas realizadas
+Para soportar 10.000 actividades se usa una tabla hash para buscar por ID y listas de dependientes precalculadas, en vez de recorrer todas las actividades. Además se ignora SIGPIPE, para que escribir en el pipe de un hijo que ya terminó no cierre el simulador.
 
-Con el plan de ejemplo y K=2 terminan las 6 actividades respetando sus dependencias. Con PLANIFICADOR_FALLA=4 y K=3, la actividad 4 falla, la 5 y la 6 quedan abortadas, y la 1, 2 y 3 terminan normal. Al presionar Ctrl+C durante la ejecución se aborta todo y se muestra el estado final. Con una dependencia inexistente, un ID duplicado o un ciclo, el programa informa el error y no crea procesos. Con 10.000 actividades sin dependencias y K=100 terminan todas, en unos 13 segundos.
+# Pruebas realizadas
 
-Limitaciones
+Con el plan de ejemplo y K=2 terminan las 6 actividades respetando sus dependencias. Con PLANIFICADOR_FALLA=4 y K=3, la actividad 4 falla, la 5 y la 6 quedan abortadas, y la 1, 2 y 3 terminan normal. Al presionar Ctrl+C durante la ejecución se aborta todo y se muestra el estado final. Con una dependencia inexistente, un ID duplicado o un ciclo, el programa informa el error y no crea procesos. Con una cadena de 10.000 actividades (cada una depende de la anterior) y K=50, terminan todas en unos 17 segundos.
 
-Con planes muy grandes que tienen muchas dependencias el programa se vuelve lento, porque buscar actividades y recorrer la lista en cada vuelta cuesta tiempo lineal. En una cadena de actividades (cada una depende de la anterior), 1.000 actividades tomaron unos 2 segundos y 2.000 unos 11 segundos, y con 4.000 o más no alcanzó a terminar en nuestras pruebas. Como mejora se podría usar una tabla hash de ID a índice y una lista de dependientes precalculada.
+# Limitaciones
+
+El programa admite como máximo 10.000 actividades, 100 dependencias por actividad, 19 caracteres por ID y 99 por nombre.
