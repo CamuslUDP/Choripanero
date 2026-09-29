@@ -16,6 +16,7 @@
 #define MAX_DEPENDENCIAS 100
 #define MAX_ID 20
 #define TAM_MENSAJE 100
+#define HASH_TAM 32768
 
 typedef enum {
     PENDIENTE,
@@ -30,6 +31,7 @@ typedef struct {
     int tiempo;
     char dependencias[MAX_DEPENDENCIAS][MAX_ID];
     int num_dependencias;
+    int dep_idx[MAX_DEPENDENCIAS];
     Estado estado;
     pid_t pid;
     int pipe_entrada[2];
@@ -39,19 +41,38 @@ static volatile sig_atomic_t interrupcion = 0;
 static int pipe_completadas[2] = {-1, -1};
 static Actividad actividades[MAX_ACTIVIDADES];
 static int cantidad = 0;
+static int tabla_hash[HASH_TAM];
+static int *dependientes[MAX_ACTIVIDADES];
+static int num_dependientes[MAX_ACTIVIDADES];
 
 static void manejar_sigint(int sig) {
     (void)sig;
     interrupcion = 1;
 }
 
+static unsigned int hash_id(const char *id) {
+    unsigned int h = 5381;
+    while (*id) h = h * 33 + (unsigned char)*id++;
+    return h & (HASH_TAM - 1);
+}
+
 static int buscar_actividad(const char *id) {
-    for (int i = 0; i < cantidad; i++) {
-        if (strcmp(actividades[i].id, id) == 0) {
-            return i;
-        }
+    unsigned int h = hash_id(id);
+    while (tabla_hash[h] != 0) {
+        int i = tabla_hash[h] - 1;
+        if (strcmp(actividades[i].id, id) == 0) return i;
+        h = (h + 1) & (HASH_TAM - 1);
     }
     return -1;
+}
+
+static void insertar_hash(int indice) {
+    unsigned int h = hash_id(actividades[indice].id);
+    while (tabla_hash[h] != 0) {
+        if (strcmp(actividades[tabla_hash[h] - 1].id, actividades[indice].id) == 0) return;
+        h = (h + 1) & (HASH_TAM - 1);
+    }
+    tabla_hash[h] = indice + 1;
 }
 
 static const char *nombre_estado(Estado estado) {
@@ -156,7 +177,10 @@ static int cargar_plan(const char *archivo) {
             fclose(f);
             return -1;
         }
-        if (resultado > 0) cantidad++;
+        if (resultado > 0) {
+            insertar_hash(cantidad);
+            cantidad++;
+        }
     }
 
     fclose(f);
@@ -230,6 +254,33 @@ static int validar_dag(void) {
     return 0;
 }
 
+static int construir_indices(void) {
+    for (int i = 0; i < cantidad; i++) {
+        for (int j = 0; j < actividades[i].num_dependencias; j++) {
+            int dep = buscar_actividad(actividades[i].dependencias[j]);
+            actividades[i].dep_idx[j] = dep;
+            num_dependientes[dep]++;
+        }
+    }
+    for (int i = 0; i < cantidad; i++) {
+        if (num_dependientes[i] > 0) {
+            dependientes[i] = malloc(sizeof(int) * (size_t)num_dependientes[i]);
+            if (dependientes[i] == NULL) {
+                perror("Error de memoria");
+                return -1;
+            }
+            num_dependientes[i] = 0;
+        }
+    }
+    for (int i = 0; i < cantidad; i++) {
+        for (int j = 0; j < actividades[i].num_dependencias; j++) {
+            int dep = actividades[i].dep_idx[j];
+            dependientes[dep][num_dependientes[dep]++] = i;
+        }
+    }
+    return 0;
+}
+
 static int enviar_mensaje_fd(int fd, const char *mensaje) {
     size_t total = strlen(mensaje) + 1;
     size_t enviados = 0;
@@ -272,7 +323,7 @@ static int recibir_mensaje(int fd, char *buffer, size_t tam) {
 
 static int todas_dependencias_disponibles(int indice) {
     for (int i = 0; i < actividades[indice].num_dependencias; i++) {
-        int dep = buscar_actividad(actividades[indice].dependencias[i]);
+        int dep = actividades[indice].dep_idx[i];
         if (dep < 0) return 0;
         if (actividades[dep].estado != TERMINADA && actividades[dep].estado != EJECUTANDO) {
             return 0;
@@ -283,7 +334,7 @@ static int todas_dependencias_disponibles(int indice) {
 
 static int alguna_dependencia_abortada(int indice) {
     for (int i = 0; i < actividades[indice].num_dependencias; i++) {
-        int dep = buscar_actividad(actividades[indice].dependencias[i]);
+        int dep = actividades[indice].dep_idx[i];
         if (dep >= 0 && actividades[dep].estado == ABORTADA) {
             return 1;
         }
@@ -304,13 +355,8 @@ static void abortar_rama(int indice) {
         actividades[indice].estado = ABORTADA;
     }
 
-    for (int i = 0; i < cantidad; i++) {
-        for (int j = 0; j < actividades[i].num_dependencias; j++) {
-            if (strcmp(actividades[i].dependencias[j], actividades[indice].id) == 0) {
-                abortar_rama(i);
-                break;
-            }
-        }
+    for (int k = 0; k < num_dependientes[indice]; k++) {
+        abortar_rama(dependientes[indice][k]);
     }
 }
 
@@ -418,14 +464,10 @@ static int propagar_dependencia(int origen) {
              actividades[origen].estado == TERMINADA ? "TERMINADA" : "FALLIDA",
              actividades[origen].id);
 
-    for (int i = 0; i < cantidad; i++) {
-        for (int j = 0; j < actividades[i].num_dependencias; j++) {
-            if (strcmp(actividades[i].dependencias[j], actividades[origen].id) == 0 &&
-                actividades[i].estado == EJECUTANDO) {
-                if (enviar_mensaje_fd(actividades[i].pipe_entrada[1], mensaje) == -1) {
-                    return -1;
-                }
-            }
+    for (int k = 0; k < num_dependientes[origen]; k++) {
+        int i = dependientes[origen][k];
+        if (actividades[i].estado == EJECUTANDO) {
+            enviar_mensaje_fd(actividades[i].pipe_entrada[1], mensaje);
         }
     }
     return 0;
@@ -486,7 +528,10 @@ static int procesar_completadas(int bloquear) {
             close(actividades[indice].pipe_entrada[1]);
             actividades[indice].pipe_entrada[1] = -1;
         }
-
+        if (actividades[indice].pid > 0) {
+            waitpid(actividades[indice].pid, NULL, 0);
+            actividades[indice].pid = -1;
+        }
         propagar_dependencia(indice);
     }
 
@@ -538,6 +583,7 @@ int main(int argc, char *argv[]) {
     sa.sa_handler = manejar_sigint;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);
 
     srand((unsigned int)(time(NULL) ^ getpid()));
 
@@ -556,6 +602,9 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    if (construir_indices() != 0) {
+        return EXIT_FAILURE;
+    }
     printf("Archivo: %s\n", argv[1]);
     printf("Límite de concurrencia K: %d\n", k);
     printf("Actividades encontradas: %d\n", cantidad);
